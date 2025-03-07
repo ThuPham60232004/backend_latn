@@ -4,9 +4,9 @@ google-cloud-storage
 python-multipart
 python-dotenv
 opencv-python
-torch 
 torchvision 
 torchaudio 
-clip-by-openai 
+torch==2.6.0
+clip-by-openai==1.0.1
 pillow
 faiss-cpu
