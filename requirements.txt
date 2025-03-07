@@ -10,3 +10,4 @@ torchaudio
 transformers
 pillow
 faiss-cpu
+ftfy
