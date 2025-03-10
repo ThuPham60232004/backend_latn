@@ -11,3 +11,5 @@ transformers
 pillow
 faiss-cpu
 ftfy
+google-cloud-aiplatform
+google-generativeai

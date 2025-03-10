@@ -16,16 +16,13 @@ load_dotenv()
 IMAGE_DIR = "app/static/images/test_set"
 PROCESSED_DIR = "app/static/processed"
 INDEX_FILE = "app/static/faiss_index.bin"
-PROCESSED_IMAGES_FILE = "app/static/processed_images.json"
 EMBEDDED_VECTORS_FILE = "app/static/embedded_vectors.json"
+LABELS_FILE = "app/static/labels.npy"
 
 # Google Cloud Storage
 GCS_BUCKET = "lantn"
 GCS_INDEX_PATH = "faiss_index.bin"
-GCS_KEY_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-
-if not GCS_KEY_PATH or not os.path.exists(GCS_KEY_PATH):
-    raise FileNotFoundError("❌ Google Cloud Key không tồn tại hoặc chưa được cấu hình đúng!")
+GCS_LABELS_PATH = "labels.npy"
 
 # FAISS Index
 INDEX_DIM = 512  
@@ -38,17 +35,21 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
-# Tạo thư mục nếu chưa có
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 
 def get_all_images(directory):
-    """Lấy danh sách ảnh JPG, JPEG, PNG từ thư mục."""
     return list(Path(directory).rglob("*.jpg")) + \
            list(Path(directory).rglob("*.jpeg")) + \
            list(Path(directory).rglob("*.png"))
 
+def extract_label_from_filename(filename):
+    try:
+        label = filename.split("_")[1].split("-")[1].split(" ")[0]
+        return label.lower()
+    except IndexError:
+        return "unknown"
+
 def load_json(file_path):
-    """Tải dữ liệu từ JSON, trả về set nếu lỗi."""
     if os.path.exists(file_path):
         try:
             with open(file_path, "r") as f:
@@ -58,12 +59,10 @@ def load_json(file_path):
     return {}
 
 def save_json(data, file_path):
-    """Lưu dữ liệu vào JSON."""
     with open(file_path, "w") as f:
         json.dump(data, f)
 
 def preprocess_image(image_path):
-    """Tiền xử lý ảnh: Gaussian Blur, cân bằng histogram, phát hiện cạnh."""
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         print(f"❌ Lỗi đọc ảnh: {image_path}")
@@ -75,7 +74,6 @@ def preprocess_image(image_path):
     return edges
 
 def load_index():
-    """Tải FAISS Index từ file nếu có."""
     if os.path.exists(INDEX_FILE):
         try:
             return faiss.read_index(INDEX_FILE)
@@ -86,11 +84,9 @@ def load_index():
 index = load_index()
 
 def save_index():
-    """Lưu FAISS Index vào file."""
     faiss.write_index(index, INDEX_FILE)
 
 def embed_image(image_path):
-    """Nhúng ảnh thành vector sử dụng CLIP."""
     image = cv2.imread(image_path)
     if image is None:
         print(f"❌ Lỗi đọc ảnh: {image_path}")
@@ -108,25 +104,31 @@ def embed_image(image_path):
     
     return embedding
 
-def upload_faiss_to_gcs():
-    """Upload FAISS Index lên Google Cloud Storage."""
+def upload_to_gcs(local_path, gcs_path):
     try:
         client = storage.Client()
         bucket = client.bucket(GCS_BUCKET)
-        blob = bucket.blob(GCS_INDEX_PATH)
+        blob = bucket.blob(gcs_path)
 
-        if os.path.exists(INDEX_FILE):
-            blob.upload_from_filename(INDEX_FILE)
-            print(f"✅ FAISS Index đã được upload lên GCS tại: gs://{GCS_BUCKET}/{GCS_INDEX_PATH}")
+        if os.path.exists(local_path):
+            blob.upload_from_filename(local_path)
+            print(f"✅ Đã upload {local_path} lên GCS tại: gs://{GCS_BUCKET}/{gcs_path}")
         else:
-            print("❌ Không tìm thấy FAISS Index để upload!")
+            print(f"❌ Không tìm thấy file {local_path} để upload!")
     except Exception as e:
-        print(f"❌ Lỗi upload FAISS Index lên GCS: {e}")
+        print(f"❌ Lỗi upload {local_path} lên GCS: {e}")
 
 def process_new_images():
-    """Xử lý ảnh mới và nhúng ảnh thành vector nếu chưa có."""
     all_images = get_all_images(IMAGE_DIR)
     processed_vectors = load_json(EMBEDDED_VECTORS_FILE)
+    labels_dict = {}
+
+    try:
+        if os.path.exists(LABELS_FILE):
+            labels_dict = np.load(LABELS_FILE, allow_pickle=True).item()
+    except Exception as e:
+        print(f"⚠️ Lỗi tải labels.npy: {e}")
+
     new_images = [str(img) for img in all_images if str(img) not in processed_vectors]
 
     print(f"📂 Tổng số ảnh: {len(all_images)}, Ảnh mới cần nhúng: {len(new_images)}")
@@ -135,7 +137,9 @@ def process_new_images():
         print("✅ Không có ảnh mới để xử lý.")
         return
     
-    for image_path in new_images:
+    for i, image_path in enumerate(new_images):
+        label = extract_label_from_filename(Path(image_path).name)
+
         processed = preprocess_image(image_path)
         if processed is not None:
             output_path = Path(PROCESSED_DIR) / Path(image_path).relative_to(IMAGE_DIR)
@@ -146,7 +150,8 @@ def process_new_images():
             if embedding is not None:
                 index.add(embedding)
                 processed_vectors[image_path] = embedding.flatten().tolist()
-                print(f"✅ Đã nhúng vector: {image_path}")
+                labels_dict[index.ntotal - 1] = label
+                print(f"✅ Đã nhúng vector: {image_path} - {label}")
             else:
                 print(f"❌ Lỗi nhúng vector: {image_path}")
 
@@ -155,9 +160,11 @@ def process_new_images():
         print("💾 Đã lưu FAISS Index.")
 
     save_json(processed_vectors, EMBEDDED_VECTORS_FILE)
-    print("✅ Hoàn thành xử lý và nhúng ảnh mới.")
-    
-    upload_faiss_to_gcs()
+    np.save(LABELS_FILE, labels_dict)
+    print("✅ Đã lưu nhãn bệnh vào labels.npy")
+
+    upload_to_gcs(INDEX_FILE, GCS_INDEX_PATH)
+    upload_to_gcs(LABELS_FILE, GCS_LABELS_PATH)
 
 if __name__ == "__main__":
     process_new_images()
