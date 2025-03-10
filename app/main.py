@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from app.services.image_preprocessing import process_new_images
+from app.clients.mmrag import process_user_image
+
 import threading
 
 app = FastAPI()
@@ -13,3 +15,4 @@ def startup_event():
 @app.get("/")
 async def root():
     return {"message": "Image Processing API is running!"}
+
