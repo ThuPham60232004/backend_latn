@@ -13,3 +13,8 @@ faiss-cpu
 ftfy
 google-cloud-aiplatform
 google-generativeai
+pymupdf
+pdfplumber
+pdfminer.six
+python-docx
+nltk
