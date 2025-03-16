@@ -18,3 +18,9 @@ pdfplumber
 pdfminer.six
 python-docx
 nltk
+pypdf2
+python-docx 
+pyspellchecker
+PyMuPDF
+ftfy
+unidecode
